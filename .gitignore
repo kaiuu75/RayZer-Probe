@@ -146,5 +146,11 @@ dmypy.json
 # pytype static type analyzer
 .pytype/
 
+#NYU depth v2 dataset
+nyu_depth_v2_labeled.mat
 
+#Slurm Script
+start_inference.sh
 
+#MD notes for thesis
+thesis_notes
