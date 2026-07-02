@@ -6,7 +6,7 @@ import argparse
 import os
 
 from load_features import FeatureDataset
-from probe_model import LinearDepthProbe
+from probes import get_probe, PROBE_CHOICES
 
 # ── Config ──────────────────────────────────────────────
 CACHED_FEATURES_PATH = 'cached_features.pt'
@@ -18,10 +18,13 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=str, default='.', help='Directory to save checkpoint')
+    parser.add_argument('--probe', type=str, default='linear', choices=PROBE_CHOICES,
+                        help='Probe type to train (default: linear)')
     args = parser.parse_args()
     
     checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
     print(f"Using device: {DEVICE}")
+    print(f"Probe type: {args.probe}")
     print(f"Output directory: {args.output_dir}")
     
     # 1. Datasets and Dataloaders
@@ -34,7 +37,7 @@ def main():
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
     # 2. Model, Optimizer, Loss
-    model = LinearDepthProbe(input_dim=768).to(DEVICE)
+    model = get_probe(args.probe, input_dim=768).to(DEVICE)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
     criterion = nn.MSELoss()
     
@@ -83,3 +86,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

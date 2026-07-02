@@ -7,7 +7,7 @@ import argparse
 import os
 
 from load_features import FeatureDataset
-from probe_model import LinearDepthProbe
+from probes import get_probe, PROBE_CHOICES
 
 # ── Config ──────────────────────────────────────────────
 CACHED_FEATURES_PATH = 'cached_features.pt'
@@ -61,10 +61,13 @@ def evaluate_delta1(model, loader, threshold=1.25):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=str, default='.', help='Directory containing checkpoint and for saving outputs')
+    parser.add_argument('--probe', type=str, default='linear', choices=PROBE_CHOICES,
+                        help='Probe type to evaluate (default: linear)')
     args = parser.parse_args()
     
     checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
     print(f"Using device: {DEVICE}")
+    print(f"Probe type: {args.probe}")
     print(f"Output directory: {args.output_dir}")
     
     # 1. Load data
@@ -77,7 +80,7 @@ def main():
     # 2. Setup model and loss
     criterion = nn.MSELoss()
     
-    trained_model = LinearDepthProbe(input_dim=768).to(DEVICE)
+    trained_model = get_probe(args.probe, input_dim=768).to(DEVICE)
     trained_model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
     
     # 3. Compute metrics
