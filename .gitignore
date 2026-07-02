@@ -154,3 +154,9 @@ start_inference.sh
 
 #MD notes for thesis
 thesis_notes
+
+#Weights
+*.pt
+
+#Pictures
+*.png

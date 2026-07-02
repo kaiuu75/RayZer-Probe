@@ -1,0 +1,78 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+
+from load_features import FeatureDataset
+from probe_model import LinearDepthProbe
+
+# ── Config ──────────────────────────────────────────────
+CACHED_FEATURES_PATH = 'cached_features.pt'
+CHECKPOINT_PATH = 'best_probe.pt'
+BATCH_SIZE = 16
+LR = 1e-3
+EPOCHS = 100
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+def main():
+    print(f"Using device: {DEVICE}")
+    
+    # 1. Datasets and Dataloaders
+    train_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='train')
+    val_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='val')
+    
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    
+    # 2. Model, Optimizer, Loss
+    model = LinearDepthProbe(input_dim=768).to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
+    criterion = nn.MSELoss()
+    
+    # 3. Training Loop
+    best_val_loss = float('inf')
+    
+    for epoch in range(1, EPOCHS + 1):
+        # Train
+        model.train()
+        train_loss = 0.0
+        for batch in train_loader:
+            tokens = batch['tokens'].to(DEVICE)  # [B, 256, 768]
+            targets = batch['depth'].to(DEVICE)  # [B, 1, 16, 16]
+            
+            optimizer.zero_grad()
+            predictions = model(tokens)
+            loss = criterion(predictions, targets)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item() * tokens.size(0)
+        
+        train_loss /= len(train_dataset)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in val_loader:
+                tokens = batch['tokens'].to(DEVICE)
+                targets = batch['depth'].to(DEVICE)
+                
+                predictions = model(tokens)
+                loss = criterion(predictions, targets)
+                val_loss += loss.item() * tokens.size(0)
+                
+        val_loss /= len(val_dataset)
+        
+        print(f"Epoch {epoch}/{EPOCHS} | Train MSE: {train_loss:.6f} | Val MSE: {val_loss:.6f}")
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), CHECKPOINT_PATH)
+            print(f"  --> Saved new best model to {CHECKPOINT_PATH} with Val MSE: {val_loss:.6f}")
+
+if __name__ == '__main__':
+    main()
