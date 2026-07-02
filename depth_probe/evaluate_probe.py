@@ -3,13 +3,14 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
+import argparse
+import os
 
 from load_features import FeatureDataset
 from probe_model import LinearDepthProbe
 
 # ── Config ──────────────────────────────────────────────
 CACHED_FEATURES_PATH = 'cached_features.pt'
-CHECKPOINT_PATH = 'best_probe.pt'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def evaluate(model, loader, criterion):
@@ -24,8 +25,47 @@ def evaluate(model, loader, criterion):
             total_loss += loss.item() * tokens.size(0)
     return total_loss / len(loader.dataset)
 
+def delta1_accuracy(pred, gt, threshold=1.25):
+    """Compute δ₁ accuracy: % of pixels where max(pred/gt, gt/pred) < threshold.
+    
+    Both pred and gt are in normalized [-1, 1] space. We exponentiate to map
+    them to positive values before computing the ratio, preserving the
+    relative ordering from the log-quantile normalization.
+    """
+    # Map from [-1, 1] to positive depth via exp()
+    pred_pos = torch.exp(pred)
+    gt_pos = torch.exp(gt)
+    
+    ratio = torch.max(pred_pos / gt_pos, gt_pos / pred_pos)
+    return (ratio < threshold).float().mean().item()
+
+def evaluate_delta1(model, loader, threshold=1.25):
+    """Compute δ₁ accuracy over an entire dataloader."""
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch in loader:
+            tokens = batch['tokens'].to(DEVICE)
+            targets = batch['depth'].to(DEVICE)
+            predictions = model(tokens)
+            
+            pred_pos = torch.exp(predictions)
+            gt_pos = torch.exp(targets)
+            ratio = torch.max(pred_pos / gt_pos, gt_pos / pred_pos)
+            
+            correct += (ratio < threshold).sum().item()
+            total += ratio.numel()
+    return correct / total
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output-dir', type=str, default='.', help='Directory containing checkpoint and for saving outputs')
+    args = parser.parse_args()
+    
+    checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
     print(f"Using device: {DEVICE}")
+    print(f"Output directory: {args.output_dir}")
     
     # 1. Load data
     train_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='train')
@@ -34,32 +74,26 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
     
-    # 2. Setup models and loss
+    # 2. Setup model and loss
     criterion = nn.MSELoss()
     
-    # Trained model
     trained_model = LinearDepthProbe(input_dim=768).to(DEVICE)
-    trained_model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE))
+    trained_model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
     
-    # Untrained baseline model
-    untrained_model = LinearDepthProbe(input_dim=768).to(DEVICE)  # random weights
-    
-    # 3. Compute MSEs
+    # 3. Compute metrics
     train_mse = evaluate(trained_model, train_loader, criterion)
     val_mse = evaluate(trained_model, val_loader, criterion)
     
-    untrained_train_mse = evaluate(untrained_model, train_loader, criterion)
-    untrained_val_mse = evaluate(untrained_model, val_loader, criterion)
+    train_delta1 = evaluate_delta1(trained_model, train_loader)
+    val_delta1 = evaluate_delta1(trained_model, val_loader)
     
     print("\n" + "="*40)
     print("           DEPTH PROBE EVALUATION")
     print("="*40)
-    print(f"Trained Probe:")
-    print(f"  - Train MSE: {train_mse:.6f}")
-    print(f"  - Val MSE:   {val_mse:.6f}")
-    print(f"Untrained (Random) Baseline:")
-    print(f"  - Train MSE: {untrained_train_mse:.6f}")
-    print(f"  - Val MSE:   {untrained_val_mse:.6f}")
+    print(f"  Train MSE:       {train_mse:.6f}")
+    print(f"  Val MSE:         {val_mse:.6f}")
+    print(f"  Train δ₁ (α=1):  {train_delta1:.4f}  ({train_delta1*100:.1f}%)")
+    print(f"  Val δ₁ (α=1):    {val_delta1:.4f}  ({val_delta1*100:.1f}%)")
     print("="*40 + "\n")
     
     # 4. Generate visualization for specific samples
@@ -108,7 +142,7 @@ def main():
         fig.colorbar(im_pred, ax=axes[i, 2], fraction=0.046, pad=0.04)
 
     plt.tight_layout()
-    plot_path = 'probe_visualization.png'
+    plot_path = os.path.join(args.output_dir, 'probe_visualization.png')
     plt.savefig(plot_path, dpi=150)
     print(f"Saved visualization grid to {plot_path}")
 

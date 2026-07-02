@@ -87,9 +87,9 @@ def extract_encoder_tokens(model, images):
         img_tokens = model.add_sptial_temporal_pe(img_tokens, b, v, h, w)
 
     # TODO: Step D — Rearrange: rearrange(img_tokens, '(b v) n d -> b (v n) d', ...)
-    img_tokens = rearrange(img_tokens, '(b v) n d -> b (v n) d', b=b, v=v)  # [B, 256, 768]
+    img_tokens = rearrange(img_tokens, '(b v) n d -> b (v n) d', b=b, v=v)
 
-    # TODO: Step E — Get camera tokens: model.get_camera_tokens(b, v=1)
+    # TODO: Step E — Get camera tokens: model.get_camera_tokens(b, v=24)
     cam_tokens = model.get_camera_tokens(b, v)  
 
     # TODO: Step F — Concat cam + img, run encoder, split out img_tokens

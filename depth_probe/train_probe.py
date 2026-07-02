@@ -2,20 +2,27 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import argparse
+import os
 
 from load_features import FeatureDataset
 from probe_model import LinearDepthProbe
 
 # ── Config ──────────────────────────────────────────────
 CACHED_FEATURES_PATH = 'cached_features.pt'
-CHECKPOINT_PATH = 'best_probe.pt'
 BATCH_SIZE = 16
 LR = 1e-3
 EPOCHS = 100
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output-dir', type=str, default='.', help='Directory to save checkpoint')
+    args = parser.parse_args()
+    
+    checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
     print(f"Using device: {DEVICE}")
+    print(f"Output directory: {args.output_dir}")
     
     # 1. Datasets and Dataloaders
     train_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='train')
@@ -71,8 +78,8 @@ def main():
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), CHECKPOINT_PATH)
-            print(f"  --> Saved new best model to {CHECKPOINT_PATH} with Val MSE: {val_loss:.6f}")
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"  --> Saved new best model to {checkpoint_path} with Val MSE: {val_loss:.6f}")
 
 if __name__ == '__main__':
     main()

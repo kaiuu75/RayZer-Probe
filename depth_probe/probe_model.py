@@ -15,4 +15,3 @@ class LinearDepthProbe(nn.Module):
         out = out.transpose(1, 2)  # [B, 1, 256]
         out = out.reshape(-1, 1, 16, 16)  # [B, 1, 16, 16]
         return out
-
