@@ -68,7 +68,7 @@ def extract_encoder_tokens(model, images):
         img_tokens: [B, 256, 768] post-encoder image tokens
     """
     b = images.shape[0]
-    v = 1  # single view per NYU image
+    v = 24  # use v=24 and duplicate images to get cached features
     h, w = 256, 256
 
     # NOTE: Your dataset already outputs [-1, 1]. RayZer's forward() does
@@ -76,7 +76,8 @@ def extract_encoder_tokens(model, images):
     # Just reshape to [B, V, C, H, W] = [B, 1, 3, 256, 256].
 
     # TODO: Step A — Reshape for RayZer's multi-view format
-    image_all = images.unsqueeze(1)
+    # Repeat the image v times
+    image_all = images.unsqueeze(1).repeat(1, v, 1, 1, 1)
 
     # TODO: Step B — Tokenize: model.image_tokenizer(...)
     img_tokens = model.image_tokenizer(image_all)
@@ -95,7 +96,11 @@ def extract_encoder_tokens(model, images):
     n_cam = cam_tokens.shape[1] // v  # = 1
     all_tokens = torch.cat([cam_tokens, img_tokens], dim=1)  # [B, 257, 768]
     all_tokens = model.run_encoder(all_tokens)
-    _, img_tokens = all_tokens.split([v * n_cam, v * 256], dim=1)  # [B, 256, 768]
+    _, img_tokens = all_tokens.split([v * n_cam, v * 256], dim=1)
+
+    # We copied the image 24 times. To keep the output shape identical
+    # to single-view [B, 256, 768], we slice out the first view's features.
+    img_tokens = img_tokens[:, :256, :]
 
     return img_tokens
 
