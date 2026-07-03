@@ -9,7 +9,6 @@ from load_features import FeatureDataset
 from probes import get_probe, PROBE_CHOICES
 
 # ── Config ──────────────────────────────────────────────
-CACHED_FEATURES_PATH = 'cached_features.pt'
 BATCH_SIZE = 16
 LR = 1e-3
 EPOCHS = 100
@@ -20,16 +19,27 @@ def main():
     parser.add_argument('--output-dir', type=str, default='.', help='Directory to save checkpoint')
     parser.add_argument('--probe', type=str, default='linear', choices=PROBE_CHOICES,
                         help='Probe type to train (default: linear)')
+    parser.add_argument('--block', type=str, required=True,
+                        help='Which block to probe (e.g., pre_encoder, block_0).')
+    parser.add_argument('--cached-features', type=str, default='cached_features.pt',
+                        help='Path to cached features file. Defaults to cached_features.pt')
     args = parser.parse_args()
     
-    checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
+    cached_path = args.cached_features
+    
+    # Determine checkpoint name (include block to avoid collisions)
+    checkpoint_name = f'best_probe_{args.block}.pt'
+    checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+    
     print(f"Using device: {DEVICE}")
     print(f"Probe type: {args.probe}")
+    print(f"Block: {args.block}")
+    print(f"Cached features: {cached_path}")
     print(f"Output directory: {args.output_dir}")
     
     # 1. Datasets and Dataloaders
-    train_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='train')
-    val_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='val')
+    train_dataset = FeatureDataset(cached_path=cached_path, split='train', block=args.block)
+    val_dataset = FeatureDataset(cached_path=cached_path, split='val', block=args.block)
     
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
@@ -86,4 +96,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

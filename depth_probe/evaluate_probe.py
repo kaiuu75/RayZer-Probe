@@ -5,12 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import argparse
 import os
+import json
 
 from load_features import FeatureDataset
 from probes import get_probe, PROBE_CHOICES
 
 # ── Config ──────────────────────────────────────────────
-CACHED_FEATURES_PATH = 'cached_features.pt'
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def evaluate(model, loader, criterion):
@@ -58,21 +58,67 @@ def evaluate_delta1(model, loader, threshold=1.25):
             total += ratio.numel()
     return correct / total
 
+def append_block_results(output_dir, block, probe_type, train_mse, val_mse, train_delta1, val_delta1):
+    """Append metrics for one block to the shared block_results.json file."""
+    results_path = os.path.join(output_dir, 'block_results.json')
+    
+    # Load existing results or start fresh
+    if os.path.exists(results_path):
+        with open(results_path, 'r') as f:
+            results = json.load(f)
+    else:
+        results = []
+    
+    # Remove any existing entry for this block+probe combo (in case of re-runs)
+    results = [r for r in results if not (r.get('block') == block and r['probe'] == probe_type)]
+    
+    results.append({
+        'block': block,
+        'probe': probe_type,
+        'train_mse': train_mse,
+        'val_mse': val_mse,
+        'train_delta1': train_delta1,
+        'val_delta1': val_delta1,
+    })
+    
+    # Sort by block index for readability (pre_encoder is handled differently)
+    def sort_key(r):
+        b = r.get('block', '')
+        if b == 'pre_encoder': return -1
+        try: return int(b.split('_')[1])
+        except: return 999
+        
+    results.sort(key=sort_key)
+    
+    with open(results_path, 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    print(f"  --> Appended results to {results_path}")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=str, default='.', help='Directory containing checkpoint and for saving outputs')
     parser.add_argument('--probe', type=str, default='linear', choices=PROBE_CHOICES,
                         help='Probe type to evaluate (default: linear)')
+    parser.add_argument('--block', type=str, required=True,
+                        help='Which block to evaluate (e.g., pre_encoder, block_0).')
+    parser.add_argument('--cached-features', type=str, default='cached_features.pt',
+                        help='Path to cached features file.')
     args = parser.parse_args()
     
-    checkpoint_path = os.path.join(args.output_dir, 'best_probe.pt')
+    cached_path = args.cached_features
+    
+    checkpoint_name = f'best_probe_{args.block}.pt'
+    checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+    
     print(f"Using device: {DEVICE}")
     print(f"Probe type: {args.probe}")
+    print(f"Block: {args.block}")
     print(f"Output directory: {args.output_dir}")
     
     # 1. Load data
-    train_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='train')
-    val_dataset = FeatureDataset(cached_path=CACHED_FEATURES_PATH, split='val')
+    train_dataset = FeatureDataset(cached_path=cached_path, split='train', block=args.block)
+    val_dataset = FeatureDataset(cached_path=cached_path, split='val', block=args.block)
     
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
@@ -81,7 +127,7 @@ def main():
     criterion = nn.MSELoss()
     
     trained_model = get_probe(args.probe, input_dim=768).to(DEVICE)
-    trained_model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
+    trained_model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE, weights_only=True))
     
     # 3. Compute metrics
     train_mse = evaluate(trained_model, train_loader, criterion)
@@ -91,7 +137,7 @@ def main():
     val_delta1 = evaluate_delta1(trained_model, val_loader)
     
     print("\n" + "="*40)
-    print("           DEPTH PROBE EVALUATION")
+    print(f"    DEPTH PROBE EVALUATION [{args.block}]")
     print("="*40)
     print(f"  Train MSE:       {train_mse:.6f}")
     print(f"  Val MSE:         {val_mse:.6f}")
@@ -99,14 +145,18 @@ def main():
     print(f"  Val δ₁ (α=1):    {val_delta1:.4f}  ({val_delta1*100:.1f}%)")
     print("="*40 + "\n")
     
-    # 4. Generate visualization for specific samples
+    # 4. Write results to JSON (for blockwise comparison plot)
+    append_block_results(args.output_dir, args.block, args.probe,
+                         train_mse, val_mse, train_delta1, val_delta1)
+    
+    # 5. Generate visualization for specific samples
     trained_model.eval()
     
     sample_indices = [100, 500, 900, 1300]
-    cached_data = torch.load(CACHED_FEATURES_PATH, weights_only=True)
+    cached_data = torch.load(cached_path, weights_only=True)
     
     # Get features directly using global indices
-    tokens = cached_data['features'][sample_indices].to(DEVICE)
+    tokens = cached_data[args.block][sample_indices].to(DEVICE)
     targets = cached_data['depths'][sample_indices].numpy()
     
     with torch.no_grad():
@@ -119,7 +169,7 @@ def main():
     fig, axes = plt.subplots(4, 3, figsize=(12, 14))
     axes[0, 0].set_title("RGB Image", fontsize=12, fontweight='bold')
     axes[0, 1].set_title("GT Depth", fontsize=12, fontweight='bold')
-    axes[0, 2].set_title("Predicted Depth", fontsize=12, fontweight='bold')
+    axes[0, 2].set_title(f"Predicted Depth [{args.block}]", fontsize=12, fontweight='bold')
 
     vmin, vmax = -1, 1
 
@@ -145,9 +195,12 @@ def main():
         fig.colorbar(im_pred, ax=axes[i, 2], fraction=0.046, pad=0.04)
 
     plt.tight_layout()
-    plot_path = os.path.join(args.output_dir, 'probe_visualization.png')
+    plot_name = f'probe_visualization_{args.block}.png'
+    plot_path = os.path.join(args.output_dir, plot_name)
     plt.savefig(plot_path, dpi=150)
+    plt.close()
     print(f"Saved visualization grid to {plot_path}")
 
 if __name__ == '__main__':
     main()
+

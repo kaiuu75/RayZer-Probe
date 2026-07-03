@@ -2,10 +2,22 @@ import torch
 from torch.utils.data import Dataset
 
 class FeatureDataset(Dataset):
-    """Dataset class for loading pre-extracted features and depth maps."""
-    def __init__(self, cached_path='cached_features.pt', split='train'):
+    """Dataset class for loading pre-extracted features and depth maps.
+    
+    Args:
+        cached_path: Path to cached features file.
+        split: 'train' or 'val'.
+        block: Which block's features to load. A string like 'pre_encoder', 'block_0',
+               'block_5'.
+    """
+    def __init__(self, cached_path='cached_features.pt', split='train', block='block_7'):
         data = torch.load(cached_path, weights_only=True)
-        features = data['features']
+        
+        if block not in data:
+            available = [k for k in data.keys() if k.startswith('block_') or k == 'pre_encoder']
+            raise ValueError(f"Block '{block}' not found. Available: {available}")
+        
+        features = data[block]
         depths = data['depths']
         
         if split == 'train':

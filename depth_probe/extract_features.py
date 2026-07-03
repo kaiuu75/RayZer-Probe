@@ -11,6 +11,7 @@ if not torch.distributed.is_initialized():
     torch.distributed.get_world_size = lambda: 1
     torch.distributed.barrier = lambda: None
 
+import argparse
 import numpy as np
 from omegaconf import OmegaConf
 from easydict import EasyDict as edict
@@ -58,51 +59,47 @@ def load_model(config, checkpoint_path, device):
 
 def extract_encoder_tokens(model, images):
     """
-    Run the encoder portion of RayZer on a batch of single images.
+    Run the encoder portion of RayZer on a batch of single images,
+    capturing intermediate representations after each encoder layer.
     
     Args:
         model: frozen RayZer model
         images: [B, 3, 256, 256] in range [-1, 1]
     
     Returns:
-        img_tokens: [B, 256, 768] post-encoder image tokens
+        dict: block_name -> [B, 256, 768] image tokens
+              pre_encoder = after tokenize + PE, before any block
+              block_0..block_N = after encoder block 0..N
     """
     b = images.shape[0]
-    v = 24  # use v=24 and duplicate images to get cached features
+    v = 24
     h, w = 256, 256
 
-    # NOTE: Your dataset already outputs [-1, 1]. RayZer's forward() does
-    # image * 2.0 - 1.0 because it expects [0, 1]. Don't double-normalize!
-    # Just reshape to [B, V, C, H, W] = [B, 1, 3, 256, 256].
-
-    # TODO: Step A — Reshape for RayZer's multi-view format
-    # Repeat the image v times
+    # Steps A–E: identical to extract_encoder_tokens
     image_all = images.unsqueeze(1).repeat(1, v, 1, 1, 1)
-
-    # TODO: Step B — Tokenize: model.image_tokenizer(...)
     img_tokens = model.image_tokenizer(image_all)
-
-    # TODO: Step C — Add positional embedding: model.add_sptial_temporal_pe(...)
     if model.use_pe_embedding_layer:
         img_tokens = model.add_sptial_temporal_pe(img_tokens, b, v, h, w)
-
-    # TODO: Step D — Rearrange: rearrange(img_tokens, '(b v) n d -> b (v n) d', ...)
     img_tokens = rearrange(img_tokens, '(b v) n d -> b (v n) d', b=b, v=v)
+    cam_tokens = model.get_camera_tokens(b, v)
 
-    # TODO: Step E — Get camera tokens: model.get_camera_tokens(b, v=24)
-    cam_tokens = model.get_camera_tokens(b, v)  
-
-    # TODO: Step F — Concat cam + img, run encoder, split out img_tokens
+    # Step F — Run encoder blocks one by one, capturing intermediates
     n_cam = cam_tokens.shape[1] // v  # = 1
-    all_tokens = torch.cat([cam_tokens, img_tokens], dim=1)  # [B, 257, 768]
-    all_tokens = model.run_encoder(all_tokens)
-    _, img_tokens = all_tokens.split([v * n_cam, v * 256], dim=1)
+    all_tokens = torch.cat([cam_tokens, img_tokens], dim=1)
 
-    # We copied the image 24 times. To keep the output shape identical
-    # to single-view [B, 256, 768], we slice out the first view's features.
-    img_tokens = img_tokens[:, :256, :]
+    block_outputs = {}
 
-    return img_tokens
+    # pre_encoder: embedding (after tokenize + PE, before any block)
+    _, pre_img = all_tokens.split([v * n_cam, v * 256], dim=1)
+    block_outputs['pre_encoder'] = pre_img[:, :256, :].clone()
+
+    # block_0..block_N: after each encoder block
+    for i, block in enumerate(model.transformer_encoder):
+        all_tokens = block(all_tokens)
+        _, img_out = all_tokens.split([v * n_cam, v * 256], dim=1)
+        block_outputs[f'block_{i}'] = img_out[:, :256, :].clone()
+
+    return block_outputs
 
 
 def create_split_indices(dataset_size, val_split, seed=42):
@@ -130,43 +127,52 @@ def main():
         pin_memory=True,
     )
 
-    # ── Extract features ────────────────────────────────
-    all_features = []
+    # ── Blockwise extraction ────────────────────────
+    num_blocks = len(model.transformer_encoder)
+    block_names = ['pre_encoder'] + [f'block_{i}' for i in range(num_blocks)]
+    all_block_features = {name: [] for name in block_names}
     all_depths = []
 
-    print("Extracting features from RayZer encoder...")
+    print(f"Extracting blockwise features from RayZer encoder ({num_blocks} blocks + pre-encoder)...")
     with torch.no_grad():
-        for batch in dataloader:
-            images = batch['image'].to(DEVICE)   # [B, 3, 256, 256]
-            depths = batch['depth']               # [B, 1, 16, 16] — keep on CPU
+        for batch_idx, batch in enumerate(dataloader):
+            images = batch['image'].to(DEVICE)
+            depths = batch['depth']
 
-            # Extract tokens with autocast if on CUDA (needed for xformers on Turing GPUs)
             if 'cuda' in str(DEVICE):
                 with torch.autocast(device_type='cuda', dtype=torch.float16):
-                    tokens = extract_encoder_tokens(model, images)  # [B, 256, 768]
+                    block_outputs = extract_encoder_tokens(model, images)
             else:
-                tokens = extract_encoder_tokens(model, images)
+                block_outputs = extract_encoder_tokens(model, images)
 
-            all_features.append(tokens.cpu().float())
+            for name in block_names:
+                all_block_features[name].append(block_outputs[name].cpu().float())
             all_depths.append(depths)
 
-    # ── Concatenate ─────────────────────────────────────
-    all_features = torch.cat(all_features, dim=0)  # [1449, 256, 768]
-    all_depths = torch.cat(all_depths, dim=0)       # [1449, 1, 16, 16]
+            if (batch_idx + 1) % 10 == 0:
+                print(f"  Processed {(batch_idx + 1) * BATCH_SIZE} images...")
 
-    # ── Split ───────────────────────────────────────────
+    # ── Concatenate ─────────────────────────────────
+    for name in block_names:
+        all_block_features[name] = torch.cat(all_block_features[name], dim=0)
+    all_depths = torch.cat(all_depths, dim=0)
+
+    # ── Split ───────────────────────────────────────
     train_indices, val_indices = create_split_indices(len(dataset), VAL_SPLIT)
 
-    # ── Save ────────────────────────────────────────────
-    torch.save({
-        'features': all_features,
+    # ── Save ────────────────────────────────────────
+    save_dict = {
         'depths': all_depths,
         'train_indices': train_indices,
         'val_indices': val_indices,
-    }, OUTPUT_PATH)
+    }
+    save_dict.update(all_block_features)
+
+    torch.save(save_dict, OUTPUT_PATH)
 
     print(f"Saved to {OUTPUT_PATH}")
-    print(f"Features: {all_features.shape}")
+    for name in block_names:
+        print(f"  {name}: {all_block_features[name].shape}")
     print(f"Depths: {all_depths.shape}")
     print(f"Train: {len(train_indices)}, Val: {len(val_indices)}")
 

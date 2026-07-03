@@ -1,6 +1,6 @@
-# Linear Probing for Monocular Depth Estimation in Self-Supervised View Synthesis Models
+# Probing for Monocular Depth Estimation in Self-Supervised View Synthesis Models
 
-This repository is a fork of [RayZer](https://github.com/hwjiang1510/RayZer) (Jiang et al., 2025), adapted for **linear probing experiments** that investigate whether the transformer representations learned by RayZer encode meaningful depth information. Specifically, we extract intermediate features from RayZer's frozen encoder and train lightweight linear probes to predict monocular depth, evaluated on the [NYU Depth V2](https://cs.nyu.edu/~fergus/datasets/nyu_depth_v2.html) benchmark.
+This repository is a fork of [RayZer](https://github.com/hwjiang1510/RayZer) (Jiang et al., 2025), adapted for **probing experiments** that investigate whether the transformer representations learned by RayZer encode meaningful depth information. Specifically, we extract intermediate features from RayZer's frozen encoder and train lightweight probes to predict monocular depth, evaluated on the [NYU Depth V2](https://cs.nyu.edu/~fergus/datasets/nyu_depth_v2.html) benchmark.
 
 > **Note**: This repository is part of a thesis project and is not affiliated with the original RayZer authors or Adobe.
 
@@ -8,21 +8,36 @@ This repository is a fork of [RayZer](https://github.com/hwjiang1510/RayZer) (Ji
 
 ## Motivation
 
-RayZer is a self-supervised model that learns to synthesize novel views without explicit 3D supervision. A natural question arises: *do the internal representations of such a model implicitly capture 3D scene geometry, particularly depth?* This repository provides the experimental infrastructure to answer that question via linear probing—a standard protocol for evaluating learned representations (Alain & Bengio, 2017).
+RayZer is a self-supervised model that learns to synthesize novel views without explicit 3D supervision. A natural question arises: *do the internal representations of such a model implicitly capture 3D scene geometry, particularly depth?* This repository provides the experimental infrastructure to answer that question via probing—a standard protocol for evaluating learned representations (Alain & Bengio, 2017).
 
 ---
 
 ## Method
 
 1. **Feature Extraction** — We forward-pass images through RayZer's frozen transformer encoder and extract token-level activations from selected layers.
-2. **Linear Probe** — A single linear layer is trained on top of these frozen features to predict per-pixel depth maps.
-3. **Evaluation** — Predictions are compared against ground-truth depth from NYU Depth V2 using standard metrics (RMSE, δ < 1.25, etc.).
+2. **Probing** — A lightweight probe is trained on top of these frozen features to predict per-pixel depth maps. Two probe architectures are supported:
+   - **Linear** — A single linear layer (`768 → 1`). Tests what is linearly decodable from the representation.
+   - **MLP** — A 3-layer MLP with GELU activations (`768 → 768 → 768 → 1`). Tests what is non-linearly accessible.
+3. **Evaluation** — Predictions are compared against ground-truth depth from NYU Depth V2 using standard metrics (MSE, δ < 1.25, etc.).
 
 ---
 
 ## Repository Structure
 
-> **TODO** — Document final repository structure once probing pipeline is complete.
+```
+depth_probe/
+├── probes/                  # Probe architectures
+│   ├── __init__.py          # Factory function get_probe() and PROBE_CHOICES
+│   ├── linear_probe.py      # Single linear layer probe
+│   └── mlp_probe.py         # 3-layer MLP probe with GELU
+├── extract_features.py      # Extract and cache token features from frozen RayZer
+├── load_features.py         # Dataset class for cached features
+├── train_probe.py           # Training script (--probe linear|mlp)
+├── evaluate_probe.py        # Evaluation and visualization (--probe linear|mlp)
+├── dataset_nyu_depth.py     # NYU Depth V2 dataset loader
+├── start_probe.sh           # SLURM job script (set PROBE_TYPE=linear|mlp)
+└── logs/                    # Timestamped run directories with output logs
+```
 
 ---
 
@@ -47,6 +62,32 @@ GPU compute capability ≥ 8.0 is required (see [CUDA GPUs](https://developer.nv
 | Data   | Model                      | Link |
 |--------|----------------------------|------|
 | DL3DV  | RayZer-8-12-12-100K       | [Hugging Face](https://huggingface.co/hwjiang/RayZer/resolve/main/rayzer_dl3dv_8_12_12_96k.pt?download=true) |
+
+### Usage
+
+Train and evaluate a probe by selecting the probe type:
+
+```bash
+cd depth_probe
+
+# Linear probe (default)
+python train_probe.py --output-dir runs/linear --probe linear
+python evaluate_probe.py --output-dir runs/linear --probe linear
+
+# MLP probe
+python train_probe.py --output-dir runs/mlp --probe mlp
+python evaluate_probe.py --output-dir runs/mlp --probe mlp
+```
+
+Or via the SLURM script:
+
+```bash
+# Default (linear)
+sbatch start_probe.sh
+
+# MLP probe
+PROBE_TYPE=mlp sbatch start_probe.sh
+```
 
 ---
 
