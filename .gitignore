@@ -160,3 +160,6 @@ thesis_notes
 
 #Pictures
 *.png
+
+# depth_probe logs
+depth_probe/logs/
